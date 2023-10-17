@@ -200,112 +200,56 @@ def main():
     visualizer.set_dataset_meta(
         pose_estimator.dataset_meta, skeleton_style=args.skeleton_style)
 
-    if args.input == 'webcam':
-        input_type = 'webcam'
-    else:
-        input_type = mimetypes.guess_type(args.input)[0].split('/')[0]
+    video_writer = None
+    frame_idx = 0
+    cap = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateFirstDevice())
 
-    if input_type == 'image':
+    cap.StartGrabbing(pylon.GrabStrategy_LatestImageOnly) 
+    converter = pylon.ImageFormatConverter()
 
-        # inference
-        pred_instances = process_one_image(args, args.input, detector,
-                                           pose_estimator, visualizer)
+    # converting to opencv bgr format
+    converter.OutputPixelFormat = pylon.PixelType_BGR8packed
+    converter.OutputBitAlignment = pylon.OutputBitAlignment_MsbAligned
 
-        if args.save_predictions:
-            pred_instances_list = split_instances(pred_instances)
-
-        if output_file:
-            img_vis = visualizer.get_image()
-            mmcv.imwrite(mmcv.rgb2bgr(img_vis), output_file)
-
-    elif input_type in ['webcam', 'video']:
-
-        # if args.input == 'webcam':
-        #     cap = cv2.VideoCapture(0)
-        # else:
-        #     cap = cv2.VideoCapture(args.input)
-
-        video_writer = None
-        pred_instances_list = []
-        frame_idx = 0
-        cap = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateFirstDevice())
-        cap.StartGrabbing(pylon.GrabStrategy_LatestImageOnly) 
-        converter = pylon.ImageFormatConverter()
-
-        # converting to opencv bgr format
-        converter.OutputPixelFormat = pylon.PixelType_BGR8packed
-        converter.OutputBitAlignment = pylon.OutputBitAlignment_MsbAligned
-
-
+    with open(args.pred_save_path, 'w') as f:
         while cap.IsGrabbing():
             grabResult = cap.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
             if grabResult.GrabSucceeded():
-                # success, frame = cap.read()
                 image = converter.Convert(grabResult)
                 frame = image.GetArray()
                 frame_idx += 1
 
-                # topdown pose estimation
-                pred_instances = process_one_image(args, frame, detector,
-                                                pose_estimator, visualizer,
-                                                0.001)
+                new_width, new_height = 640, 480 
+                resized_frame = cv2.resize(frame, (new_width, new_height))
+
+                # Topdown pose estimation
+                pred_instances = process_one_image(args, resized_frame, detector,
+                                                pose_estimator, visualizer, 0.001)
+
 
                 if args.save_predictions:
                     # save prediction results
-                    pred_instances_list.append(
+                    json.dump(
                         dict(
+                        meta_info=pose_estimator.dataset_meta,
+                        instance_info=dict(
                             frame_id=frame_idx,
-                            instances=split_instances(pred_instances)))
-
-                # output videos
-                if output_file:
-                    frame_vis = visualizer.get_image()
-
-                    if video_writer is None:
-                        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                        # the size of the image with visualization may vary
-                        # depending on the presence of heatmaps
-                        video_writer = cv2.VideoWriter(
-                            output_file,
-                            fourcc,
-                            25,  # saved fps
-                            (frame_vis.shape[1], frame_vis.shape[0]))
-
-                    video_writer.write(mmcv.rgb2bgr(frame_vis))
+                            instances=split_instances(pred_instances)
+                        )),
+                        f,
+                        indent='\t')
+            
 
                 if args.show:
                     # press ESC to exit
                     if cv2.waitKey(5) & 0xFF == 27:
                         break
 
-                    time.sleep(args.show_interval)
         grabResult.Release()
         if video_writer:
             video_writer.release()
 
         cap.StopGrabbing()
-
-    else:
-        args.save_predictions = False
-        raise ValueError(
-            f'file {os.path.basename(args.input)} has invalid format.')
-
-    if args.save_predictions:
-        with open(args.pred_save_path, 'w') as f:
-            json.dump(
-                dict(
-                    meta_info=pose_estimator.dataset_meta,
-                    instance_info=pred_instances_list),
-                f,
-                indent='\t')
-        print(f'predictions have been saved at {args.pred_save_path}')
-
-    if output_file:
-        input_type = input_type.replace('webcam', 'video')
-        print_log(
-            f'the output {input_type} has been saved at {output_file}',
-            logger='current',
-            level=logging.INFO)
 
 
 if __name__ == '__main__':
